@@ -2,40 +2,51 @@ name: Actualizar informe de licenciaturas
 
 on:
   schedule:
-    - cron: "0 12 * * 1"  # todos los lunes a las 12:00 UTC (6am CDMX aprox)
-  workflow_dispatch:      # permite ejecutarlo manualmente
+    # Lunes 12:00 UTC (~06:00 CDMX). Cambia si lo necesitas.
+    - cron: "0 12 * * 1"
+  workflow_dispatch: {}
+
+# 🔐 Permisos para poder commitear y pushear
+permissions:
+  contents: write
 
 jobs:
   update-data:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Clonar repositorio
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Configurar Python
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.11"
 
-      - name: Instalar dependencias
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Ejecutar scraper
-        run: python scraper.py
-
-      - name: Limpiar snapshot
-        run: python clean_snapshot.py
-
-      - name: Actualizar Excel
-        run: python diff_and_update.py
-
-      - name: Subir cambios
+      # Pasos tolerantes: si fallan, no rompen el workflow
+      - name: Run scraper (tolerante)
         run: |
-          git config user.name "github-actions"
-          git config user.email "actions@github.com"
-          git add .
-          git commit -m "auto: actualización semanal de planes de estudio" || echo "Sin cambios"
-          git push
+          python scraper.py || echo "scraper failed, continuing"
+
+      - name: Clean snapshot (tolerante)
+        run: |
+          python clean_snapshot.py || echo "clean failed, continuing"
+
+      - name: Diff & update Excel (tolerante)
+        run: |
+          python diff_and_update.py || echo "diff/update failed, continuing"
+
+      # Commit/push automático SOLO si hubo cambios en estos paths
+      - name: Auto-commit changes (Excel + data)
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "auto: actualización de planes (Actions)"
+          file_pattern: |
+            "19082025_PE Licenciatura_Informe anual - copia (1).xlsx"
+            data/**
+            snapshots/**
