@@ -2,11 +2,13 @@ name: Actualizar informe de licenciaturas
 
 on:
   schedule:
-    - cron: "0 12 * * 1"   # Lunes 12:00 UTC (~06:00 CDMX)
+    # Lunes 12:00 UTC (~06:00 CDMX). Cámbialo si lo deseas.
+    - cron: "0 12 * * 1"
   workflow_dispatch: {}
 
+# Permisos para crear Releases y subir artefactos
 permissions:
-  contents: write   # necesario para crear releases y subir assets
+  contents: write
 
 jobs:
   update-data:
@@ -26,6 +28,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      # --- Pipeline tolerante ---
       - name: Run scraper (tolerante)
         run: |
           python scraper.py || echo "scraper failed, continuing"
@@ -38,7 +41,7 @@ jobs:
         run: |
           python diff_and_update.py || echo "diff/update failed, continuing"
 
-      # Commit sólo de datos/huellas; NO del Excel
+      # Commit SOLO de data/snapshots (no del .xlsx)
       - name: Auto-commit data changes
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
@@ -47,13 +50,16 @@ jobs:
             data/**
             snapshots/**
 
-      # Empaquetar el Excel con timestamp
+      # Preparar el Excel con timestamp para subir a Release
       - name: Prepare Excel asset
         id: prep
+        shell: bash
         run: |
           SRC="19082025_PE Licenciatura_Informe anual - copia (1).xlsx"
           if [ ! -f "$SRC" ]; then
-            echo "No existe $SRC; nada que subir"; echo "upload=false" >> $GITHUB_OUTPUT; exit 0
+            echo "No existe $SRC; nada que subir"
+            echo "upload=false" >> $GITHUB_OUTPUT
+            exit 0
           fi
           TS=$(date -u +%Y%m%d-%H%M%S)
           OUT="PE_licenciatura_${TS}.xlsx"
@@ -63,7 +69,24 @@ jobs:
           echo "file=${OUT}" >> $GITHUB_OUTPUT
           echo "ts=${TS}" >> $GITHUB_OUTPUT
 
-      # Crear Release y subir el Excel
+      # Detectar si hubo cambios en la hoja 'Cambios_detectados'
+      - name: Detectar si hubo cambios
+        id: detect
+        run: |
+          python - << 'PY'
+          import os, pandas as pd
+          x = "19082025_PE Licenciatura_Informe anual - copia (1).xlsx"
+          has_changes = False
+          try:
+              df = pd.read_excel(x, sheet_name="Cambios_detectados")
+              has_changes = df.dropna(how="all").shape[0] > 0
+          except Exception:
+              has_changes = False
+          with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
+              fh.write(f"has_changes={str(has_changes).lower()}\n")
+          PY
+
+      # Crear Release y subir el Excel si existe
       - name: Create GitHub Release & upload asset
         if: steps.prep.outputs.upload == 'true'
         uses: softprops/action-gh-release@v2
@@ -73,3 +96,27 @@ jobs:
           draft: false
           prerelease: false
           files: ${{ steps.prep.outputs.file }}
+
+      # ---- Notificación por correo SOLO si hubo cambios ----
+      - name: Enviar alerta por correo (solo si hubo cambios)
+        if: steps.detect.outputs.has_changes == 'true'
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: ${{ secrets.SMTP_SERVER }}
+          server_port: ${{ secrets.SMTP_PORT }}
+          username: ${{ secrets.SMTP_USERNAME }}
+          password: ${{ secrets.SMTP_PASSWORD }}
+          subject: "SIAE: Cambios detectados en planes de estudio ✅"
+          to: ${{ secrets.TO_EMAIL }}     # admite varios separados por coma
+          from: "${{ secrets.FROM_NAME }} <${{ secrets.SMTP_USERNAME }}>"
+          content_type: text/html
+          html_body: |
+            <p>Hola 👋</p>
+            <p>Se detectaron <b>cambios</b> en el catálogo de planes de estudio.</p>
+            <p>Se generó un Excel nuevo en la última Release. Puedes descargarlo aquí:</p>
+            <p><a href="${{ github.server_url }}/${{ github.repository }}/releases/latest">
+              👉 Ver última Release
+            </a></p>
+            <hr>
+            <p>Repositorio: <code>${{ github.repository }}</code><br>
+            Ejecución: #${{ github.run_number }}</p>
