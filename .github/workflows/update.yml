@@ -2,13 +2,11 @@ name: Actualizar informe de licenciaturas
 
 on:
   schedule:
-    # Lunes 12:00 UTC (~06:00 CDMX). Cambia si lo necesitas.
-    - cron: "0 12 * * 1"
+    - cron: "0 12 * * 1"   # Lunes 12:00 UTC (~06:00 CDMX)
   workflow_dispatch: {}
 
-# 🔐 Permisos para poder commitear y pushear
 permissions:
-  contents: write
+  contents: write   # necesario para crear releases y subir assets
 
 jobs:
   update-data:
@@ -28,7 +26,6 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # Pasos tolerantes: si fallan, no rompen el workflow
       - name: Run scraper (tolerante)
         run: |
           python scraper.py || echo "scraper failed, continuing"
@@ -41,13 +38,38 @@ jobs:
         run: |
           python diff_and_update.py || echo "diff/update failed, continuing"
 
-      # Commit/push automático incluyendo archivos .xlsx
-      - name: Auto-commit changes (Excel + data)
+      # Commit sólo de datos/huellas; NO del Excel
+      - name: Auto-commit data changes
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
-          commit_message: "auto: actualización de planes (Actions)"
+          commit_message: "auto: actualizar datos (data/snapshots)"
           file_pattern: |
-            *.xlsx
             data/**
             snapshots/**
-          add_options: '-f'  # fuerza añadir binarios grandes como Excel
+
+      # Empaquetar el Excel con timestamp
+      - name: Prepare Excel asset
+        id: prep
+        run: |
+          SRC="19082025_PE Licenciatura_Informe anual - copia (1).xlsx"
+          if [ ! -f "$SRC" ]; then
+            echo "No existe $SRC; nada que subir"; echo "upload=false" >> $GITHUB_OUTPUT; exit 0
+          fi
+          TS=$(date -u +%Y%m%d-%H%M%S)
+          OUT="PE_licenciatura_${TS}.xlsx"
+          cp "$SRC" "$OUT"
+          echo "upload=true" >> $GITHUB_OUTPUT
+          echo "tag=pe-${TS}" >> $GITHUB_OUTPUT
+          echo "file=${OUT}" >> $GITHUB_OUTPUT
+          echo "ts=${TS}" >> $GITHUB_OUTPUT
+
+      # Crear Release y subir el Excel
+      - name: Create GitHub Release & upload asset
+        if: steps.prep.outputs.upload == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.prep.outputs.tag }}
+          name: "PE Licenciatura – ${{ steps.prep.outputs.ts }}"
+          draft: false
+          prerelease: false
+          files: ${{ steps.prep.outputs.file }}
