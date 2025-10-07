@@ -1,93 +1,111 @@
 name: Actualizar informe de licenciaturas
 
 on:
-  workflow_dispatch:
+  schedule:
+    - cron: "0 12 * * 1"   # Lunes 12:00 UTC (ajústalo si quieres)
+  workflow_dispatch: {}
+
+permissions:
+  contents: write   # necesario para crear Releases
 
 jobs:
   update-data:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Clonar repositorio
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Configurar Python
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.11"
 
-      - name: Instalar dependencias
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # 1️⃣ Ejecutar el scraper
-      - name: Ejecutar scraper (tolerante)
+      # --- Ejecuta scripts (tolerante a fallos) ---
+      - name: Run scraper (tolerante)
         run: |
-          python scraper.py || echo "⚠️ scraper.py falló, pero se continúa con el flujo."
+          python scraper.py || echo "scraper failed, continuing"
 
-      # 2️⃣ Limpiar snapshot
       - name: Clean snapshot (tolerante)
         run: |
-          python clean_snapshot.py || echo "⚠️ clean_snapshot.py falló, pero se continúa con el flujo."
+          python clean_snapshot.py || echo "clean failed, continuing"
 
-      # 3️⃣ Actualizar Excel con diferencias
       - name: Diff & update Excel (tolerante)
         run: |
-          python diff_and_update.py || echo "⚠️ diff_and_update.py falló, pero se continúa con el flujo."
+          python diff_and_update.py || echo "diff/update failed, continuing"
 
-      # 4️⃣ Crear Release pública con timestamp
-      - name: Crear Release y subir el Excel
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # --- Preparar Excel para Release ---
+      - name: Prepare Excel asset
+        id: prep
+        shell: bash
         run: |
-          TS=$(date +"%Y%m%d-%H%M%S")
+          SRC="19082025_PE Licenciatura_Informe anual - copia (1).xlsx"
+          if [ ! -f "$SRC" ]; then
+            echo "No existe $SRC; nada que subir"
+            echo "upload=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          TS=$(date -u +%Y%m%d-%H%M%S)
           OUT="PE_licenciatura_${TS}.xlsx"
-          echo "📦 Archivo de salida: $OUT"
-          echo "tag-pe-${TS}" >> $GITHUB_OUTPUT
-          git add .
-          git commit -m "auto: actualización semanal de planes de estudio" || echo "No hay cambios para commit"
-          git push || echo "No hay cambios para subir"
+          cp "$SRC" "$OUT"
+          echo "upload=true" >> "$GITHUB_OUTPUT"
+          echo "tag=pe-${TS}" >> "$GITHUB_OUTPUT"
+          echo "file=${OUT}" >> "$GITHUB_OUTPUT"
+          echo "ts=${TS}" >> "$GITHUB_OUTPUT"
 
-          gh release create "pe-${TS}" $OUT --title "PE Licenciatura – ${TS}" --notes "Actualización automática de planes de estudio" --repo $GITHUB_REPOSITORY --latest
-
-      # 5️⃣ Enviar correo de notificación con link público
-      - name: Enviar correo
-        env:
-          FROM_EMAIL: ${{ secrets.FROM_EMAIL }}
-          FROM_PASSWORD: ${{ secrets.FROM_PASSWORD }}
-          TO_EMAIL: ${{ secrets.TO_EMAIL }}
+      # --- (Opcional) detectar si hubo cambios para condicionar el mail ---
+      - name: Detectar si hubo cambios
+        id: detect
         run: |
-          python - <<'EOF'
-          import smtplib
-          from email.mime.text import MIMEText
+          python - << 'PY'
+          import os, pandas as pd
+          x = "19082025_PE Licenciatura_Informe anual - copia (1).xlsx"
+          has_changes = False
+          try:
+              df = pd.read_excel(x, sheet_name="Cambios_detectados")
+              has_changes = df.dropna(how="all").shape[0] > 0
+          except Exception:
+              has_changes = False
+          with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
+              fh.write(f"has_changes={str(has_changes).lower()}\n")
+          PY
 
-          from_email = "${{ secrets.FROM_EMAIL }}"
-          to_email = "${{ secrets.TO_EMAIL }}"
-          password = "${{ secrets.FROM_PASSWORD }}"
+      # --- Crear Release y subir el Excel (solo si hay archivo) ---
+      - name: Create GitHub Release & upload asset
+        if: steps.prep.outputs.upload == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.prep.outputs.tag }}
+          name: "PE Licenciatura – ${{ steps.prep.outputs.ts }}"
+          draft: false
+          prerelease: false
+          files: ${{ steps.prep.outputs.file }}
 
-          subject = "SIAE: Cambios detectados en planes de estudio"
-          body = """\
-          <html>
-            <body>
-              <p>Hola 👋<br><br>
-              Se detectaron <b>cambios</b> en el catálogo de planes de estudio.<br><br>
-              Se generó un nuevo Excel que ya está disponible públicamente en la última Release.<br><br>
-              👉 <a href="https://github.com/gtzmade/siae-updater/releases/latest">Ver última Release</a><br><br>
-              — Bot SIAE
-              </p>
-            </body>
-          </html>
-          """
-
-          msg = MIMEText(body, 'html')
-          msg['Subject'] = subject
-          msg['From'] = from_email
-          msg['To'] = to_email
-
-          with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-              server.login(from_email, password)
-              server.send_message(msg)
-
-          print("📧 Correo enviado exitosamente.")
-          EOF
+      # --- Enviar correo con link público a la última Release ---
+      - name: Enviar alerta por correo (link público)
+        # Si quieres solo cuando hay cambios: añade la condición siguiente
+        # if: steps.detect.outputs.has_changes == 'true'
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: ${{ secrets.SMTP_SERVER }}
+          server_port: ${{ secrets.SMTP_PORT }}
+          username: ${{ secrets.SMTP_USERNAME }}
+          password: ${{ secrets.SMTP_PASSWORD }}
+          subject: "SIAE: Cambios detectados en planes de estudio ✅"
+          to: ${{ secrets.TO_EMAIL }}
+          from: "${{ secrets.FROM_NAME }} <${{ secrets.SMTP_USERNAME }}>"
+          content_type: text/html
+          html_body: |
+            <p>Hola 👋</p>
+            <p>Se generó un nuevo Excel y está disponible públicamente:</p>
+            <p><a href="https://github.com/${{ github.repository }}/releases/latest">
+              👉 Ver última Release
+            </a></p>
+            <hr>
+            <p>Repo: <code>${{ github.repository }}</code><br>
+            Run: #${{ github.run_number }}</p>
