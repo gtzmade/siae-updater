@@ -41,12 +41,13 @@ jobs:
         run: |
           python diff_and_update.py || echo "diff/update failed, continuing"
 
-      # Commit/push automático SOLO si hubo cambios en estos paths
+      # Commit/push automático incluyendo archivos .xlsx
       - name: Auto-commit changes (Excel + data)
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
           commit_message: "auto: actualización de planes (Actions)"
           file_pattern: |
-            "19082025_PE Licenciatura_Informe anual - copia (1).xlsx"
+            *.xlsx
             data/**
             snapshots/**
+          add_options: '-f'  # fuerza añadir binarios grandes como Excel
