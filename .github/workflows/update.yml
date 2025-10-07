@@ -54,8 +54,8 @@ jobs:
           OUT="PE_licenciatura_${TS}.xlsx"
           cp "$SRC" "$OUT"
           echo "upload=true" >> "$GITHUB_OUTPUT"
-          echo "tag=pe-${TS}" >> "$GITHUB_OUTPUT"
           echo "file=${OUT}" >> "$GITHUB_OUTPUT"
+          echo "tag=pe-${TS}" >> "$GITHUB_OUTPUT"
           echo "ts=${TS}" >> "$GITHUB_OUTPUT"
 
       # --- (Opcional) detectar si hubo cambios para condicionar el mail ---
@@ -86,26 +86,53 @@ jobs:
           prerelease: false
           files: ${{ steps.prep.outputs.file }}
 
-      # --- Enviar correo con link público a la última Release ---
-      - name: Enviar alerta por correo (link público)
-        # Si quieres solo cuando hay cambios: añade la condición siguiente
-        # if: steps.detect.outputs.has_changes == 'true'
-        uses: dawidd6/action-send-mail@v3
-        with:
-          server_address: ${{ secrets.SMTP_SERVER }}
-          server_port: ${{ secrets.SMTP_PORT }}
-          username: ${{ secrets.SMTP_USERNAME }}
-          password: ${{ secrets.SMTP_PASSWORD }}
-          subject: "SIAE: Cambios detectados en planes de estudio ✅"
-          to: ${{ secrets.TO_EMAIL }}
-          from: "${{ secrets.FROM_NAME }} <${{ secrets.SMTP_USERNAME }}>"
-          content_type: text/html
-          html_body: |
-            <p>Hola 👋</p>
-            <p>Se generó un nuevo Excel y está disponible públicamente:</p>
-            <p><a href="https://github.com/${{ github.repository }}/releases/latest">
-              👉 Ver última Release
-            </a></p>
-            <hr>
-            <p>Repo: <code>${{ github.repository }}</code><br>
-            Run: #${{ github.run_number }}</p>
+      # --- Enviar correo con el Excel adjunto ---
+      - name: 📤 Enviar correo con Excel adjunto
+        if: steps.prep.outputs.upload == 'true'
+        env:
+          EMAIL_USER: ${{ secrets.EMAIL_USER }}
+          EMAIL_PASS: ${{ secrets.EMAIL_PASS }}
+          EMAIL_TO:   ${{ secrets.EMAIL_TO }}
+          OUT_FILE:   ${{ steps.prep.outputs.file }}   # archivo preparado arriba
+        run: |
+          python - <<'EOF'
+          import os, smtplib
+          from email.message import EmailMessage
+
+          sender   = os.environ["EMAIL_USER"]
+          password = os.environ["EMAIL_PASS"]
+          to       = os.environ["EMAIL_TO"]
+          out_file = os.environ["OUT_FILE"]
+
+          subject = "SIAE: Informe actualizado 📊"
+          body = (
+              "Hola 👋\n\n"
+              "Se generó un nuevo informe de planes de estudio.\n"
+              "El archivo Excel actualizado va adjunto y también está en la última Release:\n"
+              "https://github.com/${{ github.repository }}/releases/latest\n\n"
+              "Saludos,\nBot SIAE 🤖"
+          )
+
+          msg = EmailMessage()
+          msg["From"] = sender
+          msg["To"] = to
+          msg["Subject"] = subject
+          msg.set_content(body)
+
+          if not os.path.exists(out_file):
+              print(f"⚠️ No se encontró el archivo para adjuntar: {out_file}")
+          else:
+              with open(out_file, "rb") as f:
+                  msg.add_attachment(
+                      f.read(),
+                      maintype="application",
+                      subtype="vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                      filename=out_file,
+                  )
+              print(f"Adjuntado: {out_file}")
+
+          with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
+              smtp.login(sender, password)
+              smtp.send_message(msg)
+              print("✅ Correo enviado con éxito.")
+          EOF
