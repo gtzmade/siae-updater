@@ -2,7 +2,8 @@ name: Actualizar informe de licenciaturas
 
 on:
   schedule:
-    - cron: "0 12 * * 1"   # Cada lunes a las 12:00 UTC (06:00 CDMX)
+    # Corre el día 1 y 16 de cada mes a las 12:00 UTC (~06:00 hora de CDMX)
+    - cron: "0 12 1,16 * *"
   workflow_dispatch: {}
 
 permissions:
@@ -39,51 +40,32 @@ jobs:
         run: |
           python diff_and_update.py || echo "diff/update failed, continuing"
 
-      # --- Detectar si hubo cambios ---
-      - name: Detectar si hubo cambios
-        id: detect
-        run: |
-          python - << 'PY'
-          import os, pandas as pd
-          x = "19082025_PE Licenciatura_Informe anual - copia (1).xlsx"
-          has_changes = False
-          try:
-              df = pd.read_excel(x, sheet_name="Cambios_detectados")
-              has_changes = df.dropna(how="all").shape[0] > 0
-          except Exception:
-              has_changes = False
-          with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
-              fh.write(f"has_changes={str(has_changes).lower()}\n")
-          PY
-
-      # --- Preparar Excel SOLO si hay cambios ---
+      # --- Preparar Excel SIEMPRE ---
       - name: Prepare Excel asset
-        if: steps.detect.outputs.has_changes == 'true'
         id: prep
         shell: bash
         run: |
           SRC="19082025_PE Licenciatura_Informe anual - copia (1).xlsx"
           if [ ! -f "$SRC" ]; then
-            echo "No existe $SRC; nada que subir"
+            echo "❌ No existe $SRC; nada que subir"
             echo "upload=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           TS=$(date -u +%Y%m%d-%H%M%S)
           OUT="PE_licenciatura_${TS}.xlsx"
           cp "$SRC" "$OUT"
-          echo "upload=true" >> "$GITHUB_OUTPUT"
-          echo "file=${OUT}" >> "$GITHUB_OUTPUT"
+          echo "upload=true"  >> "$GITHUB_OUTPUT"
+          echo "file=${OUT}"  >> "$GITHUB_OUTPUT"
           echo "tag=pe-${TS}" >> "$GITHUB_OUTPUT"
-          echo "ts=${TS}" >> "$GITHUB_OUTPUT"
+          echo "ts=${TS}"     >> "$GITHUB_OUTPUT"
 
-      # ✅ Paso de depuración: listar xlsx generados
+      # --- Paso de depuración: listar los archivos generados ---
       - name: Listar archivos para depurar
-        if: steps.detect.outputs.has_changes == 'true'
         run: ls -lh *.xlsx || true
 
-      # --- Crear Release SOLO si hay cambios ---
+      # --- Crear Release SIEMPRE que haya archivo ---
       - name: Create GitHub Release & upload asset
-        if: steps.detect.outputs.has_changes == 'true' && steps.prep.outputs.upload == 'true'
+        if: steps.prep.outputs.upload == 'true'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.prep.outputs.tag }}
@@ -92,29 +74,29 @@ jobs:
           prerelease: false
           files: ${{ steps.prep.outputs.file }}
 
-      # --- Enviar correo SOLO si hay cambios ---
+      # --- Enviar correo SIEMPRE que haya archivo (con adjunto) ---
       - name: Enviar correo con Excel adjunto
-        if: steps.detect.outputs.has_changes == 'true' && steps.prep.outputs.upload == 'true'
+        if: steps.prep.outputs.upload == 'true'
         uses: dawidd6/action-send-mail@v3
         with:
           server_address: ${{ secrets.SMTP_SERVER }}
           server_port: ${{ secrets.SMTP_PORT }}
           username: ${{ secrets.SMTP_USERNAME }}
           password: ${{ secrets.SMTP_PASSWORD }}
-          subject: "SIAE: Informe actualizado 📊 (solo si hubo cambios)"
+          subject: "SIAE: Informe actualizado 📊"
           to: ${{ secrets.TO_EMAIL }}
           from: "${{ secrets.FROM_NAME }} <${{ secrets.SMTP_USERNAME }}>"
           content_type: text/html
           html_body: |
             <p>Hola 👋</p>
-            <p>Se detectaron <b>cambios</b> en el catálogo de planes de estudio.</p>
-            <p>Va <b>adjunto</b> el Excel actualizado y también está disponible públicamente aquí:</p>
+            <p>Se generó el informe y va <b>adjunto</b> en este correo.</p>
+            <p>También está disponible públicamente aquí:</p>
             <p><a href="https://github.com/${{ github.repository }}/releases/latest">👉 Ver última Release</a></p>
             <hr>
             <p>Repo: <code>${{ github.repository }}</code> • Run #${{ github.run_number }}</p>
           attachments: ${{ steps.prep.outputs.file }}
 
-      # --- Mensaje final cuando NO hay cambios ---
-      - name: Sin cambios detectados
-        if: steps.detect.outputs.has_changes == 'false'
-        run: echo "✅ No se detectaron cambios en la página. No se generó un nuevo Excel ni se envió correo."
+      # --- Mensaje si no se encontró el Excel base ---
+      - name: Sin archivo base
+        if: steps.prep.outputs.upload == 'false'
+        run: echo "⚠️ No se encontró el Excel base; no se creó Release ni se envió correo."
