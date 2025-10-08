@@ -2,7 +2,7 @@ name: Actualizar informe de licenciaturas
 
 on:
   schedule:
-    - cron: "0 12 * * 1"   # Lunes 12:00 UTC (ajústalo si quieres)
+    - cron: "0 12 * * 1"   # Cada lunes a las 12:00 UTC (06:00 CDMX)
   workflow_dispatch: {}
 
 permissions:
@@ -26,7 +26,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # --- Ejecuta scripts (tolerante a fallos) ---
+      # --- Ejecutar scripts principales (tolerante a fallos) ---
       - name: Run scraper (tolerante)
         run: |
           python scraper.py || echo "scraper failed, continuing"
@@ -39,8 +39,26 @@ jobs:
         run: |
           python diff_and_update.py || echo "diff/update failed, continuing"
 
-      # --- Preparar Excel para Release ---
+      # --- Detectar si hubo cambios ---
+      - name: Detectar si hubo cambios
+        id: detect
+        run: |
+          python - << 'PY'
+          import os, pandas as pd
+          x = "19082025_PE Licenciatura_Informe anual - copia (1).xlsx"
+          has_changes = False
+          try:
+              df = pd.read_excel(x, sheet_name="Cambios_detectados")
+              has_changes = df.dropna(how="all").shape[0] > 0
+          except Exception:
+              has_changes = False
+          with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
+              fh.write(f"has_changes={str(has_changes).lower()}\n")
+          PY
+
+      # --- Preparar Excel SOLO si hay cambios ---
       - name: Prepare Excel asset
+        if: steps.detect.outputs.has_changes == 'true'
         id: prep
         shell: bash
         run: |
@@ -58,30 +76,14 @@ jobs:
           echo "tag=pe-${TS}" >> "$GITHUB_OUTPUT"
           echo "ts=${TS}" >> "$GITHUB_OUTPUT"
 
-      # (Opcional) ver archivos para depurar
+      # ✅ Paso de depuración: listar xlsx generados
       - name: Listar archivos para depurar
+        if: steps.detect.outputs.has_changes == 'true'
         run: ls -lh *.xlsx || true
 
-      # --- (Opcional) detectar si hubo cambios para condicionar el mail ---
-      - name: Detectar si hubo cambios
-        id: detect
-        run: |
-          python - << 'PY'
-          import os, pandas as pd
-          x = "19082025_PE Licenciatura_Informe anual - copia (1).xlsx"
-          has_changes = False
-          try:
-              df = pd.read_excel(x, sheet_name="Cambios_detectados")
-              has_changes = df.dropna(how="all").shape[0] > 0
-          except Exception:
-              has_changes = False
-          with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
-              fh.write(f"has_changes={str(has_changes).lower()}\n")
-          PY
-
-      # --- Crear Release y subir el Excel (solo si hay archivo) ---
+      # --- Crear Release SOLO si hay cambios ---
       - name: Create GitHub Release & upload asset
-        if: steps.prep.outputs.upload == 'true'
+        if: steps.detect.outputs.has_changes == 'true' && steps.prep.outputs.upload == 'true'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.prep.outputs.tag }}
@@ -90,24 +92,29 @@ jobs:
           prerelease: false
           files: ${{ steps.prep.outputs.file }}
 
-      # --- Enviar correo con el Excel adjunto (REEMPLAZA el paso de link) ---
+      # --- Enviar correo SOLO si hay cambios ---
       - name: Enviar correo con Excel adjunto
-        if: steps.prep.outputs.upload == 'true'
+        if: steps.detect.outputs.has_changes == 'true' && steps.prep.outputs.upload == 'true'
         uses: dawidd6/action-send-mail@v3
         with:
           server_address: ${{ secrets.SMTP_SERVER }}
           server_port: ${{ secrets.SMTP_PORT }}
           username: ${{ secrets.SMTP_USERNAME }}
           password: ${{ secrets.SMTP_PASSWORD }}
-          subject: "SIAE: Informe actualizado 📊 (adjunto)"
+          subject: "SIAE: Informe actualizado 📊 (solo si hubo cambios)"
           to: ${{ secrets.TO_EMAIL }}
           from: "${{ secrets.FROM_NAME }} <${{ secrets.SMTP_USERNAME }}>"
           content_type: text/html
           html_body: |
             <p>Hola 👋</p>
-            <p>Se generó un nuevo informe y va <b>adjunto</b> en este correo.</p>
-            <p>También está disponible públicamente aquí:</p>
+            <p>Se detectaron <b>cambios</b> en el catálogo de planes de estudio.</p>
+            <p>Va <b>adjunto</b> el Excel actualizado y también está disponible públicamente aquí:</p>
             <p><a href="https://github.com/${{ github.repository }}/releases/latest">👉 Ver última Release</a></p>
             <hr>
             <p>Repo: <code>${{ github.repository }}</code> • Run #${{ github.run_number }}</p>
           attachments: ${{ steps.prep.outputs.file }}
+
+      # --- Mensaje final cuando NO hay cambios ---
+      - name: Sin cambios detectados
+        if: steps.detect.outputs.has_changes == 'false'
+        run: echo "✅ No se detectaron cambios en la página. No se generó un nuevo Excel ni se envió correo."
