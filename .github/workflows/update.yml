@@ -2,8 +2,8 @@ name: Actualizar informe de licenciaturas
 
 on:
   schedule:
-    # Corre el día 1 y 16 de cada mes a las 12:00 UTC (~06:00 hora de CDMX)
-    - cron: "0 12 1,16 * *"
+    # Corre el día 1 de enero, abril, julio y octubre a las 12:00 UTC (~06:00 CDMX)
+    - cron: "0 12 1 1,4,7,10 *"
   workflow_dispatch: {}
 
 permissions:
@@ -83,13 +83,13 @@ jobs:
           server_port: ${{ secrets.SMTP_PORT }}
           username: ${{ secrets.SMTP_USERNAME }}
           password: ${{ secrets.SMTP_PASSWORD }}
-          subject: "SIAE: Informe actualizado 📊"
+          subject: "SIAE: Informe actualizado 📊 (trimestral)"
           to: ${{ secrets.TO_EMAIL }}
           from: "${{ secrets.FROM_NAME }} <${{ secrets.SMTP_USERNAME }}>"
           content_type: text/html
           html_body: |
             <p>Hola 👋</p>
-            <p>Se generó el informe y va <b>adjunto</b> en este correo.</p>
+            <p>Se generó el informe trimestral de planes de estudio y va <b>adjunto</b> en este correo.</p>
             <p>También está disponible públicamente aquí:</p>
             <p><a href="https://github.com/${{ github.repository }}/releases/latest">👉 Ver última Release</a></p>
             <hr>
